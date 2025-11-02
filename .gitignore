@@ -1,0 +1,3 @@
+.zig-cache/
+test_out.wav
+zig-out/
