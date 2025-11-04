@@ -1,7 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-// TODO(adi): Do we want to return more than just the data?
 pub const WavData = struct {
     /// Raw data
     data: []u8,
@@ -25,15 +24,15 @@ pub const WavData = struct {
         bits_per_sample: u16,
     };
 
+    // TODO: Add more audio formats
     const AudioFormat = enum(u16) {
         pcm = 1,
         ieee_754_float = 3,
-        // TODO(adi): Add more audio formats
     };
 };
 
-// TODO(adi): Use IO interface maybe?
-// TODO(adi): Do we want to parse chunks other than the data and format chunks?
+// TODO: Use IO interface maybe?
+// TODO: Do we want to parse chunks other than the data and format chunks?
 pub fn decode(allocator: std.mem.Allocator, data: []const u8) std.mem.Allocator.Error!WavData {
     assert(data.len >= @sizeOf(MasterRIFFChunk));
     const wav_header: *const MasterRIFFChunk = @ptrCast(@alignCast(data[0..@sizeOf(MasterRIFFChunk)].ptr));
@@ -47,7 +46,7 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) std.mem.Allocator.
 
     var found_format_chunk: bool = false;
     var result: WavData = undefined;
-    var current_chunk_header: *align(1) const ChunkHeader = undefined;
+    var current_chunk_header: *const ChunkHeader = undefined;
 
     loop: switch (state) {
         .parse_next_chunk_header => {
@@ -131,9 +130,9 @@ pub fn encode(allocator: std.mem.Allocator, wav_data: WavData) std.mem.Allocator
 }
 
 const MasterRIFFChunk = extern struct {
-    file_type_block_id: FourCC,
-    file_size: u32,
-    format: FourCC,
+    file_type_block_id: FourCC align(1),
+    file_size: u32 align(1),
+    format: FourCC align(1),
 
     pub const block_id: FourCC = .{ .byte_1 = 'R', .byte_2 = 'I', .byte_3 = 'F', .byte_4 = 'F' };
     pub const format_id: FourCC = .{ .byte_1 = 'W', .byte_2 = 'A', .byte_3 = 'V', .byte_4 = 'E' };
@@ -151,17 +150,17 @@ const FourCC = packed struct(u32) {
 };
 
 const ChunkHeader = extern struct {
-    block_id: FourCC,
-    block_size: u32,
+    block_id: FourCC align(1),
+    block_size: u32 align(1),
 };
 
 const FormatChunk = extern struct {
-    audio_format: WavData.AudioFormat,
-    num_channels: u16,
-    frequency: u32,
-    byte_per_second: u32,
-    byte_per_block: u16,
-    bits_per_sample: u16,
+    audio_format: WavData.AudioFormat align(1),
+    num_channels: u16 align(1),
+    frequency: u32 align(1),
+    byte_per_second: u32 align(1),
+    byte_per_block: u16 align(1),
+    bits_per_sample: u16 align(1),
 
     pub const block_id: FourCC = @bitCast([_]u8{ 'f', 'm', 't', ' ' });
 };
@@ -191,5 +190,5 @@ test "wav decode" {
 }
 
 test "size" {
-    std.log.err("wav size: {any}", .{@sizeOf(WavData)});
+    std.log.err("wav size: {any}", .{@sizeOf(FormatChunk)});
 }

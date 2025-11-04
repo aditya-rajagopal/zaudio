@@ -9,6 +9,15 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    const lib = b.addLibrary(.{
+        .name = "zaudio",
+        .root_module = mod,
+        .linkage = .static,
+    });
+    const installed_lib = b.addInstallArtifact(lib, .{});
+    installed_lib.emitted_h = lib.getEmittedH();
+    b.getInstallStep().dependOn(&installed_lib.step);
+
     const check_exe = b.addExecutable(.{
         .name = "check",
         .root_module = mod,
