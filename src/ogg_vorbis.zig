@@ -47,7 +47,14 @@ pub const Error = error{
     MalformedNoBeginningOfStream,
     MalformedMissingContinuedPacket,
     MalformedPageSequenceOutOfOrder,
+    InvalidVorbisIdentificationPacket,
+    InvalidVorbisCommentPacket,
 } || std.mem.Allocator.Error;
+
+const VORBIS_IDENTIFICATION: u32 = 0;
+const VORBIS_COMMENT: u32 = 1;
+const VORBIS_CODEC_SETUP: u32 = 2;
+const VORBIS_CODEC_SETUP_NO: u32 = 3;
 
 // TODO: Use errors instead of asserts?
 // TODO: Use IO interface maybe?
@@ -58,6 +65,9 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) Error![]u8 {
     const start_state: DecoderState = .read_header;
 
     var read_head: []const u8 = data;
+    // TODO: Do we want to parse this?
+    // var comment_buffer = try std.ArrayList(u8).initCapacity(allocator, 1024);
+    // var vorbis_comment_packet: VorbisCommentPacket = undefined;
 
     // TODO: Is there any way to avoid this allocation?
     // PERF: Can we have a code path when the packets are contigous and not write to this buffer?
@@ -70,8 +80,14 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) Error![]u8 {
     var continued_packet_flag: bool = false;
     var begin_of_stream_flag: bool = true;
     var end_of_stream_flag: bool = false;
+    var current_packet_serial_number: u32 = undefined;
+
     // TODO: Filter only the vorbis packets
-    // var vorbis_serial_number: u32 = undefined;
+    var vorbis_current_packet_number: u32 = 0;
+    var vorbis_serial_identified: bool = false;
+    var vorbis_serial_number: u32 = undefined;
+    var vorbis_identification_packet: VorbisIDPacket = undefined;
+    // var vorbis_codec_setup_packet: VorbisCodecSetupPacket = undefined;
 
     blk: switch (start_state) {
         .read_header => {
@@ -83,10 +99,23 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) Error![]u8 {
             }
 
             const ogg_header: *const OggHeader = @ptrCast(@alignCast(read_head[0..@sizeOf(OggHeader)].ptr));
+            read_head = read_head[@sizeOf(OggHeader)..];
 
             if (ogg_header.magic != OGG_MAGIC) {
                 return error.InvalidOggSMagic;
             }
+
+            if (vorbis_serial_identified and ogg_header.bitstream_serial_number != vorbis_serial_number) {
+                const logal_segments = read_head[0..ogg_header.number_page_segments];
+                var page_size: usize = 0;
+                for (logal_segments) |segment| {
+                    page_size += segment;
+                    // TODO: Can we have continuations here?
+                }
+                read_head = read_head[page_size + ogg_header.number_page_segments ..];
+                continue :blk .read_header;
+            }
+
             if (begin_of_stream_flag and !ogg_header.header_type_flag.bos) {
                 return error.MalformedNoBeginningOfStream;
             }
@@ -102,8 +131,8 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) Error![]u8 {
             if (ogg_header.page_sequence_number != current_page) {
                 return error.MalformedPageSequenceOutOfOrder;
             }
-
-            read_head = read_head[@sizeOf(OggHeader)..];
+            current_packet_serial_number = ogg_header.bitstream_serial_number;
+            // TODO: Verify checksum
 
             segments = read_head[0..ogg_header.number_page_segments];
             // std.log.err("Segments: {any}", .{segments});
@@ -144,10 +173,121 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) Error![]u8 {
             continue :blk .read_header;
         },
         .parse_packet => |packet| {
-            std.log.err("Packet parsed: len: {any}", .{packet.len});
+            var packet_read_head: []const u8 = packet;
             // NOTE: Once we are done parsing the packet we can reset the buffer even if we are not using the packet_buffer
-            packet_buffer.shrinkRetainingCapacity(0);
-            // @INCOMPLETE
+            defer packet_buffer.shrinkRetainingCapacity(0);
+            switch (vorbis_current_packet_number) {
+                VORBIS_IDENTIFICATION => {
+                    // TODO: Check if this is a vorbis stream and if not check the next header for a BOS packet
+                    if (packet_read_head.len == 0) {
+                        return error.MalformedIncompleteData;
+                    }
+                    const packet_type: u8 = packet[0];
+                    if (packet_type != 0x01) {
+                        begin_of_stream_flag = true;
+                        // TODO: Flush the remaining packets of the page
+                        // continue :blk .read_header;
+                        return error.InvalidVorbisIdentificationPacket;
+                    }
+                    if (packet_read_head.len < 7) {
+                        begin_of_stream_flag = true;
+                        // TODO: Flush the remaining packets of the page
+                        // continue :blk .read_header;
+                        return error.InvalidVorbisIdentificationPacket;
+                    }
+                    if (!std.mem.eql(u8, packet_read_head[1..7], "vorbis")) {
+                        begin_of_stream_flag = true;
+                        // TODO: Flush the remaining packets of the page
+                        // continue :blk .read_header;
+                        return error.InvalidVorbisIdentificationPacket;
+                    }
+                    vorbis_serial_number = current_packet_serial_number;
+                    vorbis_serial_identified = true;
+                    packet_read_head = packet_read_head[7..];
+                    if (packet_read_head.len != @sizeOf(VorbisIDPacket)) {
+                        return error.InvalidVorbisIdentificationPacket;
+                    }
+                    const vorbis_id_packet: *const VorbisIDPacket = @ptrCast(@alignCast(packet_read_head[0..@sizeOf(VorbisIDPacket)].ptr));
+
+                    if (vorbis_id_packet.version != 0) {
+                        return error.InvalidVorbisIdentificationPacket;
+                    }
+                    if (vorbis_id_packet.audio_channels == 0) {
+                        return error.InvalidVorbisIdentificationPacket;
+                    }
+                    if (vorbis_id_packet.audio_sample_rate == 0) {
+                        return error.InvalidVorbisIdentificationPacket;
+                    }
+                    if (vorbis_id_packet.block_size._0 > vorbis_id_packet.block_size._1 or
+                        vorbis_id_packet.block_size._0 < 6 or vorbis_id_packet.block_size._0 > 13 or
+                        vorbis_id_packet.block_size._1 < 6 or vorbis_id_packet.block_size._1 > 13)
+                    {
+                        return error.InvalidVorbisIdentificationPacket;
+                    }
+                    if (vorbis_id_packet.framing_flag != 1) {
+                        return error.InvalidVorbisIdentificationPacket;
+                    }
+
+                    vorbis_identification_packet = vorbis_id_packet.*;
+                    std.log.err("ID header: {any}", .{vorbis_identification_packet});
+                },
+                VORBIS_COMMENT => {
+                    // TODO: Parse the vorbis comment header
+                    if (packet_read_head.len == 0) {
+                        return error.MalformedIncompleteData;
+                    }
+                    const packet_type: u8 = packet[0];
+                    if (packet_type != 0x03) {
+                        return error.InvalidVorbisCommentPacket;
+                    }
+                    if (packet_read_head.len < 7) {
+                        return error.InvalidVorbisCommentPacket;
+                    }
+                    if (!std.mem.eql(u8, packet_read_head[1..7], "vorbis")) {
+                        return error.InvalidVorbisCommentPacket;
+                    }
+                    packet_read_head = packet_read_head[7..];
+                    if (packet_read_head.len < 4) {
+                        return error.InvalidVorbisCommentPacket;
+                    }
+                    const vendor_string_length: u32 = @bitCast(packet_read_head[0..4].*);
+                    packet_read_head = packet_read_head[4..];
+                    if (packet_read_head.len < vendor_string_length) {
+                        return error.InvalidVorbisCommentPacket;
+                    }
+                    // try comment_buffer.appendSlice(allocator, packet_read_head[0..vendor_string_length]);
+                    // std.log.err("Vendor string: {s}", .{packet_read_head[0..vendor_string_length]});
+                    packet_read_head = packet_read_head[vendor_string_length..];
+
+                    if (packet_read_head.len < 4) {
+                        return error.InvalidVorbisCommentPacket;
+                    }
+                    const user_comment_list_length: u32 = @bitCast(packet_read_head[0..4].*);
+                    packet_read_head = packet_read_head[4..];
+                    for (0..user_comment_list_length) |_| {
+                        if (packet_read_head.len < 4) {
+                            return error.InvalidVorbisCommentPacket;
+                        }
+                        const user_comment_length: u32 = @bitCast(packet_read_head[0..4].*);
+                        packet_read_head = packet_read_head[4..];
+                        if (packet_read_head.len < user_comment_length) {
+                            return error.InvalidVorbisCommentPacket;
+                        }
+                        // try comment_buffer.appendSlice(allocator, packet_read_head[0..user_comment_length]);
+                        // std.log.err("User comment: {s}", .{packet_read_head[0..user_comment_length]});
+                        packet_read_head = packet_read_head[user_comment_length..];
+                    }
+                },
+
+                VORBIS_CODEC_SETUP => {
+                    // TODO: Parse the vorbis codec setup header
+                    // std.log.err("Vorbis codec setup header parsed", .{});
+                },
+                else => {
+                    // std.log.err("Audio packet", .{});
+                },
+            }
+            vorbis_current_packet_number += 1;
             continue :blk .read_next_packet;
         },
     }
@@ -156,14 +296,35 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) Error![]u8 {
     return intermediate_buffer;
 }
 
-// NOTE:
-// 1. Read the header passing what is expected to be in that header
-// 2. Store the vorbis serial number so we can skip pages that dont match the serial number
-// 3. Store the segment table and read the packet
-// 4. Start collecting different segments into a single buffer and once done send to parse packet
-// 5. Once we are done parsing packet we go read the next packet. If there is no more segments left we go to step 1.
-// 6. If there is a case where the last segment is 255 then we pause reading and go back to step 1 with expecting that
-// the continue bit is set in the header. Once we read the header we continue collecitng the segments for the packet.
+const VorbisIDPacket = extern struct {
+    version: u32 align(1), // Must be 0
+    audio_channels: u8 align(1), // Number of audio channels 1 for mono 2 for stereo
+    audio_sample_rate: u32 align(1), // Audio sample rate in Hz
+    bitrate_maximum: u32 align(1), // Hint for the maximum bitrate in bps
+    bitrate_nominal: u32 align(1), // Hint for the nominal bitrate in bps
+    bitrate_minimum: u32 align(1), // Hint for the minimum bitrate in bps
+    block_size: packed struct(u8) { _0: u4, _1: u4 } align(1), // Block size in samples
+    framing_flag: u8 align(1), // Flag indicating whether the stream is framed must be 1
+};
+
+const VorbisCommentPacket = extern struct {
+    vendor_string_length: u32 align(1), // Length of the vendor string
+    vendor_string: [*]const u8 align(1), // Vendor string
+    user_comment_list_length: u32 align(1), // Length of the user comment list
+    user_comment_list: [*]const UserComment align(1), // User comment list
+
+    pub const UserComment = extern struct {
+        length: u32 align(1), // Length of the user comment
+        entry: [*]const u8 align(1), // User comment
+    };
+};
+
+const VorbisCodecSetupPacket = extern struct {};
+
+test "comment packet" {
+    std.log.err("ID packet size: {any}", .{@sizeOf(VorbisIDPacket)});
+    std.log.err("Comment packet size: {any}", .{@sizeOf(VorbisCommentPacket)});
+}
 
 const ParserState = enum(u8) {
     read_next_packet,
