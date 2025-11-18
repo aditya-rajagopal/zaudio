@@ -24,6 +24,7 @@ pub fn reset(self: *BitStream) void {
 
 pub fn read(self: *const BitStream, bits: u7) u64 {
     // TODO: Can we have arbitrary bit widths greater than 64?
+    // @TODO If we reach the end of packet we need to return -1 as u32
     // TODO: Should we provide the ability to provide a return type?
     assert(bits <= 64);
     var result: u64 = 0;
