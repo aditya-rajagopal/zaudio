@@ -1,5 +1,6 @@
 pub const wav = @import("wav.zig");
 pub const ogg_vorbis = @import("ogg_vorbis.zig");
+pub const Arena = @import("arena.zig");
 
 test {
     std.testing.refAllDecls(@This());

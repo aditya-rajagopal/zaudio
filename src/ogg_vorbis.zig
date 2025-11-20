@@ -9,6 +9,11 @@ const FourCC = packed struct(u32) {
     byte_3: u8,
     byte_4: u8,
 
+    pub fn init(data: []const u8) FourCC {
+        assert(data.len == 4);
+        return .{ .byte_1 = data[0], .byte_2 = data[1], .byte_3 = data[2], .byte_4 = data[3] };
+    }
+
     pub fn toInt(self: FourCC) u32 {
         return @bitCast(self);
     }
@@ -24,7 +29,7 @@ const FourCC = packed struct(u32) {
 //  NOTE: A zero value zegment is not invalid;
 //  NOTE: Packets are not restricted to beginning and ending within a page
 //  although individual segments are, by definition, required to do so
-const OGG_MAGIC: FourCC = .{ .byte_1 = 'O', .byte_2 = 'g', .byte_3 = 'g', .byte_4 = 'S' };
+const OGG_MAGIC: FourCC = .init("OggS");
 const OggHeader = extern struct {
     magic: FourCC align(1),
     version: u8 align(1),
@@ -144,7 +149,6 @@ pub fn decode(allocator: std.mem.Allocator, data: []const u8) Error![]u8 {
             // TODO: Verify checksum
 
             segments = read_head[0..ogg_header.number_page_segments];
-            // std.log.err("Segments: {any}", .{segments});
             current_segment = 0;
             read_head = read_head[ogg_header.number_page_segments..];
 
